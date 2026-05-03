@@ -1,0 +1,459 @@
+# ======================================================
+# Terraform Plan / Scan / Apply Pipeline
+# ======================================================
+# Reusable Azure DevOps YAML template for Terraform deployments.
+#
+# Pipeline flow:
+#   1. Terraform Plan
+#   2. Security Scan with Trivy and/or Checkov
+#   3. Manual Approval
+#   4. Terraform Apply
+#
+# The pipeline is designed to:
+#   - Support multiple environments: dev, test, prod
+#   - Use Azure DevOps service connections with OIDC authentication
+#   - Publish Terraform plan artifacts
+#   - Scan Terraform source and plan output
+#   - Require manual approval before apply
+#   - Apply the exact reviewed Terraform plan artifact
+# ======================================================
+
+parameters:
+  # Target deployment environment.
+  # This value is used for:
+  #   - Stage and job names
+  #   - Terraform backend state key
+  #   - Environment-specific tfvars file
+  #   - Azure DevOps deployment environment
+  - name: env_key
+    type: string
+    displayName: Environment
+    default: dev
+    values:
+      - dev
+      - test
+      - prod
+
+  # Azure DevOps service connection used by AzureCLI@2.
+  # The service connection should have permissions to manage the target Azure subscription.
+  # This pipeline expects OIDC/federated authentication to be enabled.
+  - name: service_connection
+    type: string
+    displayName: Azure Service Connection
+
+  # Optional users or groups to notify during the manual validation step.
+  # Leave empty if no approval notification is required.
+  - name: approval_notify_users
+    type: string
+    displayName: Approval notification users
+    default: ''
+
+  # Controls whether Trivy should run.
+  # Trivy scans Terraform/IaC source files for misconfigurations.
+  - name: run_trivy
+    type: boolean
+    displayName: Run Trivy scan
+    default: true
+
+  # Controls whether Checkov should run.
+  # Checkov scans the Terraform plan JSON for policy violations.
+  - name: run_checkov
+    type: boolean
+    displayName: Run Checkov scan
+    default: true
+
+  # Controls whether security findings should fail the pipeline.
+  # If false, scan results are published but do not block deployment.
+  - name: enforce_security_gate
+    type: boolean
+    displayName: Enforce security gate
+    default: true
+
+
+stages:
+
+# ======================================================
+# PLAN
+# ======================================================
+# Generates a Terraform execution plan for the selected environment.
+#
+# Outputs:
+#   - tfplan: binary Terraform plan used later by terraform apply
+#   - tfplan.json: JSON representation used by security scanners
+#
+# Publishing the plan as an artifact ensures the Apply stage uses the
+# same reviewed plan instead of generating a new one.
+# ======================================================
+- stage: Terraform_Plan_${{ parameters.env_key }}
+  displayName: Terraform Plan (${{ parameters.env_key }})
+
+  jobs:
+  - job: Terraform_Plan_${{ parameters.env_key }}
+    displayName: Terraform Plan (${{ parameters.env_key }})
+
+    steps:
+    # Checkout repository containing Terraform code and pipeline templates.
+    - checkout: self
+
+    # Install the required Terraform version using a reusable template.
+    - template: install-terraform.yml
+      parameters:
+        terraform_version: 1.8.5
+
+    # Run Terraform init and plan inside an Azure CLI authenticated context.
+    - task: AzureCLI@2
+      displayName: Terraform Plan
+      inputs:
+        # Azure service connection passed as a template parameter.
+        azureSubscription: ${{ parameters.service_connection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+
+        # Exposes service principal and OIDC token variables to the script.
+        addSpnToEnvironment: true
+        inlineScript: |
+          set -e
+
+          # Configure Terraform AzureRM provider authentication using OIDC.
+          # These variables are consumed by the AzureRM provider.
+          export ARM_USE_OIDC=true
+          export ARM_CLIENT_ID="$servicePrincipalId"
+          export ARM_TENANT_ID="$tenantId"
+          export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+          export ARM_OIDC_TOKEN="$idToken"
+
+          echo "Initializing Terraform backend..."
+
+          # Initialize Terraform backend.
+          # The backend key is environment-specific to keep state files separated.
+          terraform -chdir=terraform init -input=false \
+            -backend-config="key=${{ parameters.env_key }}.terraform.tfstate"
+
+          echo "Generating Terraform plan..."
+
+          # Generate a Terraform plan using the environment-specific tfvars file.
+          # The binary plan is saved as tfplan.
+          terraform -chdir=terraform plan -input=false -no-color \
+            -var-file="env/${{ parameters.env_key }}.tfvars" \
+            -out=tfplan
+
+          # Convert the binary plan into JSON for scanning and review tooling.
+          terraform -chdir=terraform show -json tfplan > terraform/tfplan.json
+
+          echo "Generated plan files:"
+          ls -la terraform/tfplan terraform/tfplan.json
+
+    # Publish the binary plan artifact.
+    # This artifact is consumed by the Apply stage.
+    - publish: terraform/tfplan
+      artifact: tfplan-${{ parameters.env_key }}
+      displayName: Publish Terraform Plan
+
+    # Publish the JSON plan artifact.
+    # This artifact is consumed by the Scan stage.
+    - publish: terraform/tfplan.json
+      artifact: tfplan-json-${{ parameters.env_key }}
+      displayName: Publish Terraform Plan JSON
+
+
+# ======================================================
+# SCAN
+# ======================================================
+# Runs optional security scans after Terraform plan generation.
+#
+# Trivy:
+#   - Scans Terraform source code for IaC misconfigurations
+#
+# Checkov:
+#   - Scans the generated Terraform plan JSON
+#
+# The stage runs only if at least one scanner is enabled.
+# ======================================================
+- stage: Terraform_Scan_${{ parameters.env_key }}
+  displayName: Terraform Scan (${{ parameters.env_key }})
+  dependsOn: Terraform_Plan_${{ parameters.env_key }}
+
+  # Run only if the Plan stage succeeded and at least one scanner is enabled.
+  condition: and(
+    succeeded(),
+    or(
+      eq('${{ parameters.run_trivy }}', 'true'),
+      eq('${{ parameters.run_checkov }}', 'true')
+    )
+   )
+
+  jobs:
+  - job: Terraform_Scan_${{ parameters.env_key }}
+    displayName: Terraform Scan (${{ parameters.env_key }})
+
+    steps:
+    # Checkout repository so scanners can inspect Terraform source files.
+    - checkout: self
+
+    # Download the Terraform plan JSON generated by the Plan stage.
+    - download: current
+      artifact: tfplan-json-${{ parameters.env_key }}
+
+    # Install Trivy only when enabled.
+    - ${{ if eq(parameters.run_trivy, true) }}:
+      - template: install-trivy.yml
+
+    # Install Checkov only when enabled.
+    - ${{ if eq(parameters.run_checkov, true) }}:
+      - template: install-checkov.yml
+
+    # Execute the enabled security scanners.
+    - bash: |
+        set -e
+
+        echo "RUN_TRIVY=$RUN_TRIVY"
+        echo "RUN_CHECKOV=$RUN_CHECKOV"
+
+        # Create a reports directory for JUnit XML output.
+        mkdir -p terraform/reports
+
+        # Location where Azure DevOps downloads the Terraform plan JSON artifact.
+        PLAN_JSON="$(Pipeline.Workspace)/tfplan-json-${{ parameters.env_key }}/tfplan.json"
+
+        echo "Pipeline workspace contents:"
+        ls -R "$(Pipeline.Workspace)"
+
+        # Fail early if the expected plan JSON artifact is missing.
+        if [ ! -f "$PLAN_JSON" ]; then
+          echo "##vso[task.logissue type=error]tfplan.json not found at $PLAN_JSON"
+          exit 1
+        fi
+
+        # Copy the downloaded plan JSON into the Terraform directory for scanning.
+        cp "$PLAN_JSON" terraform/tfplan.json
+
+        # Run Trivy against Terraform source files.
+        if [ "${RUN_TRIVY,,}" = "true" ]; then
+          echo "Running Trivy (IaC scan on source)..."
+
+          # Download Trivy JUnit template to publish results in Azure DevOps.
+          curl -sSL -o terraform/junit.tpl https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/junit.tpl
+
+          # Run Trivy config scan.
+          # --severity limits findings to HIGH and CRITICAL.
+          # --exit-code 0 prevents immediate failure so results can still be published.
+          trivy config terraform \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 \
+            --format template \
+            --template "@terraform/junit.tpl" \
+            --output terraform/reports/trivy-report.xml || true
+        else
+          echo "Trivy scan skipped."
+        fi
+
+        # Run Checkov against the Terraform plan JSON.
+        if [ "${RUN_CHECKOV,,}" = "true" ]; then
+          echo "Running Checkov (Plan scan on downloaded tfplan.json)..."
+
+          # --soft-fail allows the pipeline to continue so test results can be published.
+          # The explicit security gate step decides whether to fail the pipeline.
+          checkov \
+            -f terraform/tfplan.json \
+            --framework terraform_plan \
+            -o cli \
+            -o junitxml \
+            --output-file-path console,terraform/reports/checkov-report.xml \
+            --soft-fail
+        else
+          echo "Checkov scan skipped."
+        fi
+
+        echo "Generated files:"
+        ls -la terraform/reports || true
+      displayName: Run Security Scans
+      env:
+        # Pass boolean parameters into Bash-friendly environment variables.
+        RUN_TRIVY: ${{ parameters.run_trivy }}
+        RUN_CHECKOV: ${{ parameters.run_checkov }}
+
+      # Continue even if scanner execution has issues, so reports can be published.
+      # Enforcement is handled by the security gate step below.
+      continueOnError: true
+
+    # Publish Checkov JUnit results to Azure DevOps test reporting.
+    - ${{ if eq(parameters.run_checkov, true) }}:
+      - task: PublishTestResults@2
+        displayName: Publish Checkov results
+        condition: always()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: '$(System.DefaultWorkingDirectory)/terraform/reports/checkov-report.xml'
+          testRunTitle: 'Checkov Results - ${{ parameters.env_key }}'
+          failTaskOnFailedTests: false
+
+    # Publish Trivy JUnit results to Azure DevOps test reporting.
+    - ${{ if eq(parameters.run_trivy, true) }}:
+      - task: PublishTestResults@2
+        displayName: Publish Trivy results
+        condition: always()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: '$(System.DefaultWorkingDirectory)/terraform/reports/trivy-report.xml'
+          testRunTitle: 'Trivy Results - ${{ parameters.env_key }}'
+          failTaskOnFailedTests: false
+
+    # Optional security gate.
+    # This step fails the stage if scan reports contain failures.
+    - ${{ if and(eq(parameters.enforce_security_gate, true), or(eq(parameters.run_trivy, true), eq(parameters.run_checkov, true))) }}:
+      - bash: |
+          set -e
+          FAIL=0
+
+          echo "RUN_TRIVY=$RUN_TRIVY"
+          echo "RUN_CHECKOV=$RUN_CHECKOV"
+
+          # Check Trivy report for failed tests.
+          if [ "${RUN_TRIVY,,}" = "true" ] && [ -f terraform/reports/trivy-report.xml ]; then
+            if grep -q "<failure" terraform/reports/trivy-report.xml; then
+              echo "##vso[task.logissue type=error]Trivy detected HIGH/CRITICAL issues."
+              FAIL=1
+            fi
+          fi
+
+          # Check Checkov report for failed tests.
+          if [ "${RUN_CHECKOV,,}" = "true" ] && [ -f terraform/reports/checkov-report.xml ]; then
+            if grep -q "<failure" terraform/reports/checkov-report.xml; then
+              echo "##vso[task.logissue type=error]Checkov policy violations detected."
+              FAIL=1
+            fi
+          fi
+
+          # Exit with non-zero status if any scanner reported blocking findings.
+          exit $FAIL
+        displayName: Enforce Security Gate
+        env:
+          RUN_TRIVY: ${{ parameters.run_trivy }}
+          RUN_CHECKOV: ${{ parameters.run_checkov }}
+
+
+# ======================================================
+# MANUAL APPROVAL
+# ======================================================
+# Requires a human approval before Terraform Apply.
+#
+# This gives reviewers time to inspect:
+#   - Terraform plan artifact
+#   - Terraform plan JSON
+#   - Trivy results
+#   - Checkov results
+#
+# The stage can proceed when:
+#   - Terraform Plan succeeded
+#   - Terraform Scan succeeded or was skipped
+# ======================================================
+- stage: Terraform_Approval_${{ parameters.env_key }}
+  displayName: Approve Terraform Plan (${{ parameters.env_key }})
+  dependsOn:
+    - Terraform_Plan_${{ parameters.env_key }}
+    - Terraform_Scan_${{ parameters.env_key }}
+
+  # Continue only when the plan succeeded and scan did not fail.
+  condition: |
+    and(
+      succeeded('Terraform_Plan_${{ parameters.env_key }}'),
+      in(dependencies.Terraform_Scan_${{ parameters.env_key }}.result, 'Succeeded', 'Skipped')
+    )
+
+  jobs:
+  - job: Terraform_Approval_${{ parameters.env_key }}
+    displayName: Approve Terraform Plan (${{ parameters.env_key }})
+
+    # ManualValidation@0 must run on the server pool.
+    pool: server
+
+    # Approval expires after 24 hours.
+    timeoutInMinutes: 1440
+
+    steps:
+    # Pause pipeline execution until a reviewer approves or rejects.
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        instructions: |
+          Review the Terraform plan and security scan results for environment '${{ parameters.env_key }}'.
+
+          Approve to continue with Terraform Apply.
+          Reject to stop the deployment.
+
+        # Reject automatically if the approval timeout is reached.
+        onTimeout: reject
+
+        # Add notification users only when provided.
+        ${{ if ne(parameters.approval_notify_users, '') }}:
+          notifyUsers: ${{ parameters.approval_notify_users }}
+
+
+# ======================================================
+# APPLY
+# ======================================================
+# Applies the approved Terraform plan.
+#
+# Important:
+#   - This stage does not create a new plan.
+#   - It downloads and applies the exact binary plan produced earlier.
+#   - This prevents drift between reviewed and applied changes.
+# ======================================================
+- stage: Terraform_Apply_${{ parameters.env_key }}
+  displayName: Terraform Apply (${{ parameters.env_key }})
+  dependsOn: Terraform_Approval_${{ parameters.env_key }}
+
+  # Run only if manual approval completed successfully.
+  condition: succeeded()
+
+  jobs:
+  - deployment: Terraform_Apply_${{ parameters.env_key }}
+    displayName: Terraform Apply (${{ parameters.env_key }})
+
+    # Azure DevOps environment used for deployment history and environment controls.
+    environment: ${{ parameters.env_key }}
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          # Checkout repository containing Terraform code and templates.
+          - checkout: self
+
+          # Install the same Terraform version used during Plan.
+          - template: install-terraform.yml
+            parameters:
+              terraform_version: 1.8.5
+
+          # Download the binary Terraform plan artifact created by the Plan stage.
+          - download: current
+            artifact: tfplan-${{ parameters.env_key }}
+
+          # Authenticate to Azure and apply the approved Terraform plan.
+          - task: AzureCLI@2
+            displayName: Terraform Apply
+            inputs:
+              azureSubscription: ${{ parameters.service_connection }}
+              scriptType: bash
+              scriptLocation: inlineScript
+
+              # Exposes service principal and OIDC token variables to the script.
+              addSpnToEnvironment: true
+              inlineScript: |
+                set -e
+
+                # Configure Terraform AzureRM provider authentication using OIDC.
+                export ARM_USE_OIDC=true
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                export ARM_OIDC_TOKEN="$idToken"
+
+                # Re-initialize backend before applying.
+                # The same environment-specific state key is used as in Plan.
+                terraform -chdir=terraform init -input=false \
+                  -backend-config="key=${{ parameters.env_key }}.terraform.tfstate"
+
+                # Apply the exact approved binary plan artifact.
+                terraform -chdir=terraform apply -auto-approve \
+                  "$(Pipeline.Workspace)/tfplan-${{ parameters.env_key }}/tfplan"

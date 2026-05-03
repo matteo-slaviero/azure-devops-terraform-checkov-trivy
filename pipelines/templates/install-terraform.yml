@@ -1,0 +1,29 @@
+parameters:
+  - name: terraform_version
+    type: string
+    default: '1.8.5'
+
+steps:
+  - bash: |
+      set -euxo pipefail
+
+      sudo apt-get update
+      sudo apt-get install -y wget unzip curl
+
+      echo "Installing Terraform ${TERRAFORM_VERSION}..."
+      wget -q "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+
+      mkdir -p tf-install
+      unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -d tf-install
+
+      if [ -e /usr/local/bin/terraform ]; then
+        sudo rm -f /usr/local/bin/terraform
+      fi
+
+      sudo cp tf-install/terraform /usr/local/bin/terraform
+      sudo chmod +x /usr/local/bin/terraform
+
+      terraform --version
+    displayName: Install Terraform
+    env:
+      TERRAFORM_VERSION: ${{ parameters.terraform_version }}

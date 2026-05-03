@@ -1,0 +1,73 @@
+# Disable automatic CI/CD triggers.
+# This pipeline will only run manually or via another pipeline.
+trigger: none
+
+# ======================================================
+# PIPELINE PARAMETERS
+# ======================================================
+# These parameters allow runtime customization of security behavior.
+
+parameters:
+# Toggle Trivy scan (IaC static analysis).
+- name: run_trivy
+  displayName: Run Trivy Scan
+  type: boolean
+  default: true
+
+# Toggle Checkov scan (Terraform plan analysis).
+- name: run_checkov
+  displayName: Run Checkov Scan
+  type: boolean
+  default: true
+
+# Controls whether the pipeline should fail on security findings.
+# If false → scans run in "report-only" mode.
+# If true → pipeline fails when issues are detected.
+- name: enforce_security_gate
+  displayName: Enforce security gate
+  type: boolean
+  default: false
+
+
+# ======================================================
+# AGENT CONFIGURATION
+# ======================================================
+# Use Microsoft-hosted Ubuntu agent for execution.
+pool:
+  vmImage: 'ubuntu-latest'
+
+
+# ======================================================
+# VARIABLES
+# ======================================================
+# Central place to define reusable values.
+variables:
+  # Azure DevOps service connection used for authentication.
+  # Must have appropriate permissions on the target subscription.
+  service_connection: '<your_service_connection_name>'
+
+
+# ======================================================
+# PIPELINE STAGES
+# ======================================================
+# This pipeline delegates execution to a reusable template.
+# The template contains the full Terraform workflow:
+#   Plan → Scan → Approval → Apply
+
+stages:
+- template: templates/tf-base-template.yml
+  parameters:
+    # Target environment (maps to tfvars + backend state + ADO environment).
+    env_key: 'dev'
+
+    # Pass service connection into the template.
+    service_connection: $(service_connection)
+
+    # No approval notification users configured.
+    # You can add emails or groups if needed.
+    approval_notify_users: ''
+
+    # Forward runtime parameters to template.
+    run_trivy: ${{ parameters.run_trivy }}
+    run_checkov: ${{ parameters.run_checkov }}
+    enforce_security_gate: ${{ parameters.enforce_security_gate }}
