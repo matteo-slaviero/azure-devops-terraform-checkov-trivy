@@ -9,27 +9,27 @@ for deploying Terraform infrastructure with **security and governance
 built in by design**.
 
 It integrates **Terraform**, **Checkov**, and **Trivy** to enable
-**policy-as-code validation** and **security scanning throughout the
-deployment lifecycle**.\
+**policy-as-code validation** and **security scanning** throughout the
+deployment lifecycle**.
 
 In particular, it includes **post-plan analysis**, ensuring that *actual
-infrastructure changes* are evaluated **before deployment (apply)**.
+infrastructure changes* are evaluated *before deployment (apply)*.
 
 ## Key Features
 
--   **Security-first approach**\
+-   **Security-first approach**
     Security controls are embedded directly into every stage of the
     pipeline lifecycle.
 
--   **Post-plan scanning (real change validation)**\
+-   **Post-plan scanning (real change validation)**
     Analyzes Terraform plan output rather than relying solely on static
     code checks.
 
--   **Environment reusability**\
+-   **Environment reusability**
     A single pipeline template consistently supports **dev, test,** and
     **production** environments.
 
--   **Configurable quality gates**\
+-   **Configurable quality gates**
     Pipeline execution can be automatically blocked based on defined
     **security and compliance thresholds**.
 
@@ -61,15 +61,15 @@ azureServiceConnection: "<your_service_connection_name>"
 
 ## Usage
 
--   **Azure Service Connection**\
+-   **Azure Service Connection**
    In Azure DevOps, create a service connection using *Workload Identity Federation*, and grant the generated service principal the *Storage Blob Data Contributor* role on the Azure Storage account to use to manage the Terraform state.
 
--   **Azure DevOps Environments**\
+-   **Azure DevOps Environments**
     Create an *Azure DevOps Environment* for each environment to manage
     (dev, test, and prod). Optionally,bconfigure the appropriate
     *Approvals and Checks* for each environment.
 
--   **Azure Pipelines**\
+-   **Azure Pipelines**
     Create an *Azure DevOps Pipeline* for each environment using for example the
     `dev-pipeline.yml`, `test-pipeline.yml`, and `prod-pipeline.yml`
     files.
