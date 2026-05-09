@@ -1,43 +1,48 @@
 # Azure DevOps Terraform Security Pipeline
 
-**Terraform · Checkov · Trivy · Azure DevOps**
+Enterprise-grade DevSecOps pipeline for Terraform Infrastructure-as-Code validation, security scanning, and vulnerability assessment using **Terraform · Checkov · Trivy · Azure DevOps**.
+
+![Azure DevOps](https://img.shields.io/badge/Azure_DevOps-0078D7?style=flat-square&logo=azuredevops&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-623CE4?style=flat-square&logo=terraform&logoColor=white)
+![IaC](https://img.shields.io/badge/Infrastructure-As_Code-0052CC?style=flat-square)
+![Checkov](https://img.shields.io/badge/Checkov-IaC_Security-success?style=flat-square)
+![Trivy](https://img.shields.io/badge/Trivy-Vulnerability_Scanning-blueviolet?style=flat-square)
+![DevSecOps](https://img.shields.io/badge/DevSecOps-Enabled-critical?style=flat-square)
 
 ## Overview
 
-This repository provides a **reusable Azure DevOps pipeline template**
-for deploying Terraform infrastructure with **security and governance
-built in by design**.
+This repository provides a **reusable Azure DevOps pipeline template** for deploying Terraform-based infrastructure on Azure, with **security and governance built in by design**.
 
-It integrates **Terraform**, **Checkov**, and **Trivy** to enable
-**policy-as-code validation** and **security scanning** throughout the
-deployment lifecycle.
+It integrates **Terraform**, **Checkov**, and **Trivy** to enforce **policy-as-code** controls and perform **continuous security scanning** across the entire deployment lifecycle.
 
-In particular, it includes **post-plan analysis**, ensuring that *actual
-infrastructure changes* are evaluated *before deployment (apply)*.
+## Goals
 
+- Infrastructure-as-Code automation
+- Continuous security validation
+- Vulnerability scanning
+- Policy-as-Code enforcement
+- Enterprise-ready CI/CD pipeline design
+- Cloud governance alignment
+  
 ## Key Features
 
--   **Security-first approach**\
-    Security controls are embedded directly into every stage of the
-    pipeline lifecycle.
+**Security-first approach**\
+Built-in security and compliance checks are seamlessly integrated into the CI/CD workflow, enabling **DevSecOps** practices and reinforcing **shift-left** security.
 
--   **Post-plan scanning (real change validation)**\
-    Analyzes Terraform plan output rather than relying solely on static
-    code checks.
+**Plan-based validation**\
+The Terraform execution plan (*tfplan*) is analyzed to validate actual infrastructure changes, instead of relying solely on static analysis of the source code.
 
--   **Environment reusability**\
-    A single pipeline template consistently supports **dev, test,** and
-    **production** environments.
+**Multi environment configuration**\
+A single, reusable template ensures deployment consistency and reduces configuration drift across dev, test, and prod environments.
 
--   **Configurable quality gates**\
-    Pipeline execution can be automatically blocked based on defined
-    **security and compliance thresholds**.
+**Automated quality gates**\
+Integrated *stop-and-fix* mechanisms automatically halt the pipeline if security or compliance standards aren't met, preventing risky deployments.
 
-## Configuration
+## Configuration and Usage
 
 ### Terraform Backend (`provider.tf`)
 
-Configure the Terraform backend to store state in Azure Storage:
+Configure the Terraform backend by defining the Azure Storage Account reference used to manage the Terraform state:
 
 ``` hcl
 backend "azurerm" {
@@ -47,63 +52,43 @@ backend "azurerm" {
 }
 ```
 
+###  Azure DevOps Environments 
+    
+In Azure DevOps, create an *Azure DevOps Environment* for each target environment (dev, test, and prod). Optionally, configure the appropriate *Approvals and Checks* for each environment.
+
 ### Azure DevOps Service Connection
 
-Each environment pipeline (dev/test/prod) must reference an Azure
-service connection:
+In Azure DevOps, create an *Azure Resource Manager service connection* using *Workload Identity Federation*. Then grant the generated service principal the *Storage Blob Data Contributor* role on the Azure Storage account used for Terraform state management.
+
+Update each environment-specific pipeline YAML file (`dev-pipeline.yml`, `test-pipeline.yml`, and `prod-pipeline.yml`) to reference the created Azure service connection:
 
 ``` yaml
 azureServiceConnection: "<your_service_connection_name>"
 ```
 
-**Notes:** - The service connection should be configured using
-**Workload Identity Federation** for improved security.
+### Azure Pipeline 
 
-## Usage
-
--   **Azure Service Connection**\
-   In Azure DevOps, create a service connection using *Workload Identity Federation*, and grant the generated service principal the *Storage Blob Data Contributor* role on the Azure Storage account to use to manage the Terraform state.
-
--   **Azure DevOps Environments**\
-    Create an *Azure DevOps Environment* for each environment to manage
-    (dev, test, and prod). Optionally,bconfigure the appropriate
-    *Approvals and Checks* for each environment.
-
--   **Azure Pipelines**\
-    Create an *Azure DevOps Pipeline* for each environment using for example the
-    `dev-pipeline.yml`, `test-pipeline.yml`, and `prod-pipeline.yml`
-    files.
-
-## Quality Gates 
-
-The pipeline enforces **configurable quality gates** that can block
-execution based on:
-
--   **Security findings**
-    -   High or critical misconfigurations
--   **Policy violations**
-    -   Non-compliant resource definitions
-
-This ensures that only compliant and secure infrastructure changes are
-deployed.
+In Azure DevOps, create an *Azure DevOps Pipeline* for each target environment using the provided `dev-pipeline.yml`, `test-pipeline.yml`, and `prod-pipeline.yml` files.
 
 ## Checkov & Trivy Customization
 
-Security and governance controls can be tailored using:
+Checkov and Trivy can be customized to tailor security and governance controls by using:
 
--   Custom policies
--   Rule exclusions
--   Severity thresholds
+- Custom policies
+- Rule exclusions
 
-This flexibility allows alignment with organizational security standards
-and compliance requirements.
+This flexibility enables alignment with organizational security standards and compliance requirements.
 
-For details see Checkov and Trivy documentation.
+For implementation details, refer to the official Checkov and Trivy documentation. Below are some useful links:
+
+* [Checkov - Suppressing and Skipping Policies](https://www.checkov.io/2.Basics/Suppressing%20and%20Skipping%20Policies.html)
+* [Checkov - Custom Policies Overview](https://www.checkov.io/3.Custom%20Policies/Custom%20Policies%20Overview.html)
+* [Trivy - Custom Checks](https://trivy.dev/docs/latest/scanner/misconfiguration/custom/)
+* [Trivy - Filtering with .trivyignore](https://trivy.dev/docs/latest/configuration/filtering/#trivyignore)
 
 ## Performance Optimization
 
-Pipeline performance can be improved by using an *Azure Container Apps
-job* runner  with pre-installed tooling:
+Pipeline performance can be improved by using an *Azure Container Apps job* runner  with pre-installed tooling:
 -   Terraform 
 -   Checkov 
 -   Trivy
