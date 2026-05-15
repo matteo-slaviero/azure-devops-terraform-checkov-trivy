@@ -362,7 +362,7 @@ stages:
   # Continue only when the plan succeeded and scan did not fail.
   condition: |
     and(
-      succeeded('Terraform_Plan_${{ parameters.env_key }}'),
+      in(dependencies.Terraform_Plan_${{ parameters.env_key }}.result, 'Succeeded'),
       in(dependencies.Terraform_Scan_${{ parameters.env_key }}.result, 'Succeeded', 'Skipped')
     )
 
@@ -410,7 +410,8 @@ stages:
   dependsOn: Terraform_Approval_${{ parameters.env_key }}
 
   # Run only if manual approval completed successfully.
-  condition: succeeded()
+  condition: |
+    in(dependencies.Terraform_Approval_${{ parameters.env_key }}.result, 'Succeeded')
 
   jobs:
   - deployment: Terraform_Apply_${{ parameters.env_key }}
