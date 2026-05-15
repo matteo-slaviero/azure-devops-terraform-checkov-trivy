@@ -129,12 +129,18 @@ stages:
           terraform -chdir=terraform init -input=false \
             -backend-config="key=${{ parameters.env_key }}.terraform.tfstate"
 
+          echo "Validating Terraform configuration..."
+
+          # Validate Terraform configuration before generating the plan.
+          terraform -chdir=terraform validate -no-color
+
           echo "Generating Terraform plan..."
 
           # Generate a Terraform plan using the environment-specific tfvars file.
           # The binary plan is saved as tfplan.
           terraform -chdir=terraform plan -input=false -no-color \
             -var-file="env/${{ parameters.env_key }}.tfvars" \
+            -var-file="env/global.tfvars" \
             -out=tfplan
 
           # Convert the binary plan into JSON for scanning and review tooling.

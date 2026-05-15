@@ -1,7 +1,6 @@
 variable "primary_location" {
   type        = string
   description = "Primary location of the resources"
-  default     = "westeurope"
 }
 
 variable "demo_resource_group_name" {
